@@ -385,6 +385,38 @@
   }
   .path-progress.visible { display: block; }
 
+  /* 2-step reach badge */
+  #reach-panel {
+    position: absolute;
+    top: 12px;
+    left: 12px;
+    background: rgba(0,0,0,0.72);
+    border: 1px solid rgba(57,255,20,0.45);
+    border-radius: 8px;
+    padding: 8px 14px;
+    font-size: 12px;
+    color: #39ff14;
+    z-index: 10;
+    display: none;
+    backdrop-filter: blur(6px);
+    line-height: 1.55;
+    box-shadow: 0 0 14px rgba(57,255,20,0.18);
+  }
+  #reach-panel.visible { display: block; }
+  #reach-panel .rp-title { font-weight: 700; font-size: 13px; margin-bottom: 2px; }
+  #reach-panel .rp-row { color: rgba(57,255,20,0.75); }
+  #reach-panel .rp-row strong { color: #39ff14; }
+  #reach-panel .rp-sub { color: rgba(57,255,20,0.5); font-size: 11px; margin-top: 3px; }
+  .light #reach-panel {
+    background: rgba(240,255,240,0.92);
+    border-color: rgba(0,160,40,0.5);
+    color: #006b1a;
+    box-shadow: 0 0 14px rgba(0,180,50,0.15);
+  }
+  .light #reach-panel .rp-row { color: rgba(0,107,26,0.8); }
+  .light #reach-panel .rp-row strong { color: #006b1a; }
+  .light #reach-panel .rp-sub { color: rgba(0,107,26,0.5); }
+
   /* ── Community Overlap Panel ── */
   #comm-overlap-panel {
     position: absolute;
@@ -529,6 +561,12 @@
       <div class="loading-sub">Loading 4,039 people and 88,234 friendships</div>
     </div>
     <div class="path-progress" id="path-progress"></div>
+    <div id="reach-panel">
+      <div class="rp-title" id="rp-title"></div>
+      <div class="rp-row" id="rp-step1"></div>
+      <div class="rp-row" id="rp-step2"></div>
+      <div class="rp-sub" id="rp-pct"></div>
+    </div>
     <!-- Community Integration Diagram — top-right corner -->
     <div id="comm-overlap-panel">
       <div class="overlap-header">
@@ -618,6 +656,9 @@ let pathEdges = new Set();
 let adjacency = {};   // node id → Set of neighbor ids
 let pathAnimTimer = null;
 let numCommunities = 0;
+let selectedNode = null;
+let step1Nodes = new Set();
+let step2Nodes = new Set();
 
 // ──────────────────────────────────────────────
 // DARK MODE
@@ -690,9 +731,13 @@ function clearPath() {
   pathEdges = new Set();
   highlightedNodes = new Set();
   highlightedEdges = new Set();
+  selectedNode = null;
+  step1Nodes = new Set();
+  step2Nodes = new Set();
   document.getElementById('path-result').classList.remove('visible');
   document.getElementById('path-progress').classList.remove('visible');
   document.getElementById('path-error').classList.remove('visible');
+  document.getElementById('reach-panel').classList.remove('visible');
   if (renderer) renderer.refresh();
 }
 
@@ -739,7 +784,6 @@ function animatePath(path) {
 function nodeReducer(node, data) {
   const res = { ...data };
   const inPath = pathNodes.size > 0 && pathNodes.has(node);
-  const isHighlighted = highlightedNodes.size > 0 && highlightedNodes.has(node);
 
   if (pathNodes.size > 0) {
     if (inPath) {
@@ -752,13 +796,27 @@ function nodeReducer(node, data) {
       res.size = data.size * 0.5;
       res.label = '';
     }
-  } else if (highlightedNodes.size > 0) {
-    if (isHighlighted) {
-      res.size = data.size * 1.4;
+  } else if (selectedNode !== null) {
+    if (node === selectedNode) {
+      // Clicked node: keep original color, bigger, always labelled
+      res.size = data.size * 2.2;
+      res.zIndex = 3;
+      res.label = `Person ${node}`;
+    } else if (step1Nodes.has(node)) {
+      // 1 hop away: bright neon green
+      res.color = '#39ff14';
+      res.size = data.size * 1.5;
       res.zIndex = 2;
+      res.label = data.influencer ? data.label : '';
+    } else if (step2Nodes.has(node)) {
+      // 2 hops away: dimmer green
+      res.color = isDark ? '#00c832' : '#007a1e';
+      res.size = data.size * 1.0;
+      res.zIndex = 1;
+      res.label = '';
     } else {
-      res.color = isDark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.06)';
-      res.size = data.size * 0.5;
+      res.color = isDark ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.05)';
+      res.size = data.size * 0.45;
       res.label = '';
     }
   }
@@ -776,11 +834,29 @@ function edgeReducer(edge, data) {
       res.color = isDark ? 'rgba(255,255,255,0.01)' : 'rgba(0,0,0,0.02)';
       res.size = 0.3;
     }
-  } else if (highlightedEdges.size > 0) {
-    if (highlightedEdges.has(edge)) {
-      res.color = isDark ? 'rgba(255,255,255,0.35)' : 'rgba(0,0,0,0.25)';
-      res.size = 1.2;
-      res.zIndex = 1;
+  } else if (selectedNode !== null) {
+    const src = graph.source(edge);
+    const tgt = graph.target(edge);
+    const srcHop = src === selectedNode ? 0 : step1Nodes.has(src) ? 1 : step2Nodes.has(src) ? 2 : -1;
+    const tgtHop = tgt === selectedNode ? 0 : step1Nodes.has(tgt) ? 1 : step2Nodes.has(tgt) ? 2 : -1;
+
+    if (srcHop >= 0 && tgtHop >= 0) {
+      const minHop = Math.min(srcHop, tgtHop);
+      if (minHop === 0) {
+        // selected ↔ step1: bright neon green
+        res.color = '#39ff14';
+        res.size = 1.6;
+        res.zIndex = 2;
+      } else if (minHop === 1) {
+        // step1 ↔ step1 or step1 ↔ step2: medium green
+        res.color = isDark ? 'rgba(57,255,20,0.35)' : 'rgba(0,150,40,0.4)';
+        res.size = 0.8;
+        res.zIndex = 1;
+      } else {
+        // step2 ↔ step2
+        res.color = isDark ? 'rgba(0,200,50,0.12)' : 'rgba(0,120,30,0.15)';
+        res.size = 0.4;
+      }
     } else {
       res.color = isDark ? 'rgba(255,255,255,0.01)' : 'rgba(0,0,0,0.02)';
       res.size = 0.3;
@@ -844,12 +920,37 @@ function buildLegend() {
 
 function highlightNeighborhood(nodeId) {
   if (!graph.hasNode(nodeId)) return;
-  const neighbors = new Set([nodeId, ...graph.neighbors(nodeId)]);
-  highlightedNodes = neighbors;
+
+  selectedNode = nodeId;
+
+  // Step 1: direct neighbors
+  step1Nodes = new Set(adjacency[nodeId] || []);
+
+  // Step 2: neighbors-of-neighbors not already in step1 or the origin
+  step2Nodes = new Set();
+  for (const nb of step1Nodes) {
+    for (const nn of (adjacency[nb] || [])) {
+      if (nn !== nodeId && !step1Nodes.has(nn)) step2Nodes.add(nn);
+    }
+  }
+
+  // Keep legacy sets for any residual consumers
+  highlightedNodes = new Set([nodeId, ...step1Nodes, ...step2Nodes]);
   highlightedEdges = new Set();
-  graph.forEachEdge((edge, _, source, target) => {
-    if (neighbors.has(source) && neighbors.has(target)) highlightedEdges.add(edge);
-  });
+
+  // Update reach panel
+  const total = step1Nodes.size + step2Nodes.size;
+  const pct = ((total / (graph.order - 1)) * 100).toFixed(1);
+  const panel = document.getElementById('reach-panel');
+  document.getElementById('rp-title').textContent = `Person ${nodeId} — 2-step reach`;
+  document.getElementById('rp-step1').innerHTML =
+    `<strong>${step1Nodes.size.toLocaleString()}</strong> direct friends (step 1)`;
+  document.getElementById('rp-step2').innerHTML =
+    `<strong>${step2Nodes.size.toLocaleString()}</strong> friends-of-friends (step 2)`;
+  document.getElementById('rp-pct').textContent =
+    `${total.toLocaleString()} total · ${pct}% of network`;
+  panel.classList.add('visible');
+
   renderer.refresh();
 }
 
@@ -952,8 +1053,6 @@ async function init() {
   });
   renderer.on('clickStage', () => {
     clearPath();
-    highlightedNodes = new Set();
-    highlightedEdges = new Set();
     document.querySelectorAll('.inf-row').forEach(r => r.classList.remove('active'));
     renderer.refresh();
   });
@@ -1074,8 +1173,6 @@ function wireControls() {
   // Reset view
   document.getElementById('reset-btn').addEventListener('click', () => {
     clearPath();
-    highlightedNodes = new Set();
-    highlightedEdges = new Set();
     document.querySelectorAll('.inf-row').forEach(r => r.classList.remove('active'));
     const anchor = graph.getNodeAttributes('107');
     renderer.getCamera().animate({ x: anchor.x, y: anchor.y, ratio: 0.025 }, { duration: 500 });
